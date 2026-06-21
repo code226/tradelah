@@ -153,8 +153,10 @@ export class QuestradeClient {
       {
         type: 'TFSA',
         accountId: '88776655',
-        cash: 12500.00,
-        buyingPower: 12500.00,
+        cashCAD: 12500.00,
+        cashUSD: 0,
+        buyingPowerCAD: 12500.00,
+        buyingPowerUSD: 0,
         positions: [
           {
             symbol: 'VFV.TO',
@@ -162,7 +164,8 @@ export class QuestradeClient {
             openQuantity: 80,
             averageEntryPrice: 112.50,
             currentPrice: 115.00,
-            marketValue: 9200.00
+            marketValue: 9200.00,
+            currency: 'CAD'
           },
           {
             symbol: 'XIU.TO',
@@ -170,15 +173,18 @@ export class QuestradeClient {
             openQuantity: 150,
             averageEntryPrice: 31.00,
             currentPrice: 32.50,
-            marketValue: 4875.00
+            marketValue: 4875.00,
+            currency: 'CAD'
           }
         ]
       },
       {
         type: 'RRSP',
         accountId: '11223344',
-        cash: 4200.00,
-        buyingPower: 4200.00,
+        cashCAD: 0,
+        cashUSD: 4200.00,
+        buyingPowerCAD: 0,
+        buyingPowerUSD: 4200.00,
         positions: [
           {
             symbol: 'MSFT',
@@ -186,7 +192,8 @@ export class QuestradeClient {
             openQuantity: 20,
             averageEntryPrice: 395.00,
             currentPrice: 415.00,
-            marketValue: 8300.00 // CAD equivalent
+            marketValue: 8300.00,
+            currency: 'USD'
           },
           {
             symbol: 'AAPL',
@@ -194,7 +201,8 @@ export class QuestradeClient {
             openQuantity: 15,
             averageEntryPrice: 172.00,
             currentPrice: 178.00,
-            marketValue: 2670.00
+            marketValue: 2670.00,
+            currency: 'USD'
           }
         ]
       }
@@ -212,17 +220,23 @@ export class QuestradeClient {
     const targetAccount = accounts.find(a => a.type === accountType);
     if (!targetAccount) return;
 
-    const totalCost = quantity * price;
+    const isUSD = !symbol.endsWith('.TO');
+    const estimatedCost = quantity * price;
 
     if (action === 'BUY') {
-      targetAccount.cash -= totalCost;
-      targetAccount.buyingPower -= totalCost;
+      if (isUSD) {
+        targetAccount.cashUSD -= estimatedCost;
+        targetAccount.buyingPowerUSD -= estimatedCost;
+      } else {
+        targetAccount.cashCAD -= estimatedCost;
+        targetAccount.buyingPowerCAD -= estimatedCost;
+      }
 
       const existingPos = targetAccount.positions.find(p => p.symbol === symbol);
       if (existingPos) {
         const currentCostBase = existingPos.openQuantity * existingPos.averageEntryPrice;
         existingPos.openQuantity += quantity;
-        existingPos.averageEntryPrice = (currentCostBase + totalCost) / existingPos.openQuantity;
+        existingPos.averageEntryPrice = (currentCostBase + estimatedCost) / existingPos.openQuantity;
         existingPos.currentPrice = price;
         existingPos.marketValue = existingPos.openQuantity * price;
       } else {
@@ -232,13 +246,19 @@ export class QuestradeClient {
           openQuantity: quantity,
           averageEntryPrice: price,
           currentPrice: price,
-          marketValue: totalCost
+          marketValue: estimatedCost,
+          currency: isUSD ? 'USD' : 'CAD'
         });
       }
     } else {
       // SELL
-      targetAccount.cash += totalCost;
-      targetAccount.buyingPower += totalCost;
+      if (isUSD) {
+        targetAccount.cashUSD += estimatedCost;
+        targetAccount.buyingPowerUSD += estimatedCost;
+      } else {
+        targetAccount.cashCAD += estimatedCost;
+        targetAccount.buyingPowerCAD += estimatedCost;
+      }
 
       const existingPosIndex = targetAccount.positions.findIndex(p => p.symbol === symbol);
       if (existingPosIndex !== -1) {

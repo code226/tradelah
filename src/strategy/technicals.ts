@@ -42,6 +42,8 @@ export class TechnicalStrategy {
         action,
         suggestedPrice: quote.price,
         reason,
+        estimatedCost: 0, // Set during sizing
+        currency: symbol.endsWith('.TO') || symbol.endsWith('.V') ? 'CAD' : 'USD',
         timestamp: new Date()
       });
     }

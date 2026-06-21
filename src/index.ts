@@ -1,111 +1,122 @@
-import { config, validateConfig } from './config/index.js';
+import { config, validateConfig, loadTenants } from './config/index.js';
 import { LocalStore } from './db/index.js';
-import { QuestradeClient } from './integrations/questrade.js';
+import { CsvImporter } from './integrations/csvImporter.js';
 import { MarketDataClient } from './integrations/marketData.js';
 import { TelegramNotifier } from './integrations/telegram.js';
 import { TechnicalStrategy } from './strategy/technicals.js';
 import { RebalancerStrategy } from './strategy/rebalancer.js';
 import { CapacityFilter } from './risk/capacity.js';
-import { StrategySignal, OrderSuggestion } from './types.js';
+import { StrategySignal, TenantConfig } from './types.js';
 
-async function runCycle(
-  questrade: QuestradeClient,
+async function runTenantCycle(
+  tenant: TenantConfig,
   marketData: MarketDataClient,
   notifier: TelegramNotifier,
   technicalStrategy: TechnicalStrategy,
   rebalancerStrategy: RebalancerStrategy,
   capacityFilter: CapacityFilter
 ) {
-  console.log(`\n⏳ [${new Date().toLocaleTimeString()}] Running evaluation cycle...`);
+  console.log(`\n  👤 Processing tenant: ${tenant.tenantName}`);
 
   try {
-    // 1. Fetch Accounts (Balances & Positions)
-    const accounts = await questrade.getAccounts();
-    console.log(`💼 Loaded accounts: ${accounts.map(a => `${a.type} ($${(a.cash + a.positions.reduce((sum, p) => sum + p.marketValue, 0)).toFixed(2)})`).join(', ')}`);
+    // 1. Import portfolio from CSV
+    const { accounts, warnings, csvLastModified } = CsvImporter.import(tenant.balancesCsvPath, tenant.positionsCsvPath);
+    
+    warnings.forEach(w => console.log(`  ${w}`));
+    console.log(`  📋 CSV last updated: ${csvLastModified.toLocaleString()}`);
+    console.log(`  💼 Accounts: ${accounts.map(a => `${a.type} ($${(a.cashCAD + a.cashUSD + a.positions.reduce((sum, p) => sum + p.marketValue, 0)).toFixed(2)})`).join(', ')}`);
 
     // 2. Fetch Watchlist Price Quotes
-    const quotes = await marketData.getQuotes(config.watchlist);
-    console.log(`📈 Watchlist prices: ${quotes.map(q => `${q.symbol}: $${q.price.toFixed(2)} (${q.changePercent > 0 ? '+' : ''}${q.changePercent}%)`).join(', ')}`);
+    const quotes = await marketData.getQuotes(tenant.watchlist);
+    console.log(`  📈 Prices: ${quotes.map(q => `${q.symbol}: $${q.price.toFixed(2)} (${q.changePercent > 0 ? '+' : ''}${q.changePercent}%)`).join(', ')}`);
 
-    // 3. Generate Signals
+    // 3. Generate Signals (pass tenant config for per-tenant thresholds)
     const technicalSignals = await technicalStrategy.evaluate(quotes);
-    const rebalanceSignals = rebalancerStrategy.evaluate(accounts);
+    const rebalanceSignals = rebalancerStrategy.evaluate(accounts, tenant);
     
-    // Combine signals
     const allSignals: StrategySignal[] = [...technicalSignals, ...rebalanceSignals];
     const activeSignals = allSignals.filter(s => s.action !== 'HOLD');
 
     if (activeSignals.length === 0) {
-      console.log('✅ No active trade indicators detected this cycle.');
+      console.log(`  ✅ No active signals for ${tenant.tenantName} this cycle.`);
       return;
     }
 
-    console.log(`🔔 Found ${activeSignals.length} strategy signal(s). Filtering through capacity and risk limits...`);
+    console.log(`  🔔 ${activeSignals.length} signal(s) found. Filtering through capacity and risk limits...`);
 
-    // 4. Capacity & Risk Filtering
-    const approvedOrders = capacityFilter.filterAndSize(activeSignals, accounts);
+    // 4. Capacity & Risk Filtering (pass tenant config for per-tenant limits)
+    const approvedOrders = capacityFilter.filterAndSize(activeSignals, accounts, tenant);
 
     if (approvedOrders.length === 0) {
-      console.log('⚠️ Signal(s) generated but rejected due to buying power constraints or risk limits.');
+      console.log(`  ⚠️ Signals rejected due to capacity or risk limits.`);
       return;
     }
 
-    // 5. Dispatch Notifications & Simulate Execution
+    // 5. Dispatch Notifications to this tenant's Telegram
     for (const order of approvedOrders) {
-      const sent = await notifier.sendOrderAlert(order);
-
-      if (sent && config.simulationMode) {
-        console.log(`🔄 [PoC Simulation] Simulating execution of ${order.action} ${order.quantity} shares of ${order.symbol} in ${order.accountType}...`);
-        questrade.simulateTradeExecution(
-          order.accountType,
-          order.symbol,
-          order.action,
-          order.quantity,
-          order.price
-        );
-      }
+      await notifier.sendOrderAlert(order, tenant.telegramChatId);
     }
   } catch (error) {
-    console.error(`❌ Cycle execution failed: ${(error as Error).message}`);
+    console.error(`  ❌ Error processing ${tenant.tenantName}: ${(error as Error).message}`);
   }
 }
 
+async function runCycle(
+  tenants: TenantConfig[],
+  marketData: MarketDataClient,
+  notifier: TelegramNotifier,
+  technicalStrategy: TechnicalStrategy,
+  rebalancerStrategy: RebalancerStrategy,
+  capacityFilter: CapacityFilter
+) {
+  console.log(`\n⏳ [${new Date().toLocaleTimeString()}] Running evaluation cycle for ${tenants.length} tenant(s)...`);
+
+  for (const tenant of tenants) {
+    await runTenantCycle(tenant, marketData, notifier, technicalStrategy, rebalancerStrategy, capacityFilter);
+  }
+
+  console.log(`\n✅ Cycle complete.`);
+}
+
 async function main() {
-  console.log('🚀 Starting Tradelah Personal Trade Advisor MVP PoC...');
+  console.log('🚀 Starting Tradelah v0.2 — Personal Trade Advisor (Multi-Tenant CSV Mode)...');
   
   // Initialize Database
   LocalStore.init();
 
-  // Validate inputs
+  // Validate global config
   validateConfig();
 
-  // Instantiate Modules
-  const questrade = new QuestradeClient();
+  // Load tenant configurations
+  const tenants = loadTenants();
+  console.log(`📋 Loaded ${tenants.length} tenant(s): ${tenants.map(t => t.tenantName).join(', ')}`);
+
+  // Instantiate shared modules
   const marketData = new MarketDataClient();
   const notifier = new TelegramNotifier();
   const technicalStrategy = new TechnicalStrategy();
   const rebalancerStrategy = new RebalancerStrategy();
   const capacityFilter = new CapacityFilter();
 
-  await notifier.sendSystemAlert('Tradelah PoC engine has successfully started in simulation mode.');
+  await notifier.sendSystemAlert('Tradelah v0.2 engine started in CSV + multi-tenant mode.');
 
   const runOnce = process.argv.includes('--once');
 
   if (runOnce) {
-    await runCycle(questrade, marketData, notifier, technicalStrategy, rebalancerStrategy, capacityFilter);
+    await runCycle(tenants, marketData, notifier, technicalStrategy, rebalancerStrategy, capacityFilter);
     console.log('\n🏁 Single-run execution completed. Exiting.');
     process.exit(0);
   }
 
-  // Periodic Loop (default 15 seconds for interactive PoC demonstration)
-  const intervalMs = 15000;
-  console.log(`🕒 Live monitoring active. Running evaluations every ${intervalMs / 1000} seconds. Press Ctrl+C to stop.`);
+  // Periodic Loop
+  const intervalMs = config.pollingIntervalSeconds * 1000;
+  console.log(`🕒 Live monitoring active. Running every ${config.pollingIntervalSeconds}s. Press Ctrl+C to stop.`);
 
   // Run immediately on boot
-  await runCycle(questrade, marketData, notifier, technicalStrategy, rebalancerStrategy, capacityFilter);
+  await runCycle(tenants, marketData, notifier, technicalStrategy, rebalancerStrategy, capacityFilter);
 
   const timer = setInterval(async () => {
-    await runCycle(questrade, marketData, notifier, technicalStrategy, rebalancerStrategy, capacityFilter);
+    await runCycle(tenants, marketData, notifier, technicalStrategy, rebalancerStrategy, capacityFilter);
   }, intervalMs);
 
   process.on('SIGINT', () => {

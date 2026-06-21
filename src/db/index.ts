@@ -5,10 +5,13 @@ const dataDir = path.join(process.cwd(), 'data');
 const storePath = path.join(dataDir, 'store.json');
 
 interface StoreSchema {
+  // Questrade OAuth tokens (dormant — retained for future API integration)
   questradeAccessToken: string;
   questradeRefreshToken: string;
   questradeApiServer: string;
   tokenExpiresAt: number;
+
+  // Simulated price history for strategy engine testing
   simulatedPortfolioState?: any;
 }
 
