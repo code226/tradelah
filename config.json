@@ -1,0 +1,14 @@
+{
+  "watchlist": ["VFV.TO", "XIU.TO", "MSFT", "AAPL"],
+  "targetAllocations": {
+    "VFV.TO": 0.40,
+    "XIU.TO": 0.20,
+    "MSFT": 0.20,
+    "AAPL": 0.20
+  },
+  "risk": {
+    "maxPositionSizePercent": 0.50,
+    "minCashBufferPercent": 0.05,
+    "rebalanceDriftThreshold": 0.05
+  }
+}
